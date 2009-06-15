@@ -77,7 +77,9 @@ __asmcall int main ( void ) {
 		if ( have_images() ) {
 			for_each_image ( image ) {
 				image_exec ( image );
-				break;
+				/* break;  */
+				/* commented so that second script will be executed -- pravin
+				*/
 			}
 		} else {
 			autoboot();

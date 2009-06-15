@@ -1,0 +1,16 @@
+#!gpxe
+echo "Hi, We will be using PXEKnife from URL http://www.alien.doesntexist.org/pxeknife"
+echo "It is assumed that you have dhcp networking"
+imgload pxeSTATIC.gpxe
+imgstat
+ifopen net0
+echo "Hit Control+C to cancel DHCP"
+echo "You may want to do this if you want to use static-IP"
+echo "Otherwise, it will try DHCP, and then anyway go to static-IP"
+sleep 4
+dhcp net0
+set 209:string pxelinux.cfg/default
+set 210:string http://www.alien.doesntexist.org/pxeknife/
+echo "Here we go"
+chain http://www.alien.doesntexist.org/pxeknife/pxelinux.0
+echo "PxeKnife booting cancelled, using local disk instead.."

@@ -79,7 +79,7 @@ static int script_exec ( struct image *image ) {
 	rc = 0;
  done:
 	/* Re-register image and return */
-	register_image ( image );
+	/* register_image ( image );   */ /* commented so that next one will be executed -- pravin */
 	return rc;
 }
 

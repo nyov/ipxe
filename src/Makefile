@@ -83,7 +83,7 @@ NON_AUTO_SRCS	+= drivers/net/prism2.c
 # Default build target: build the most common targets and print out a
 # helpfully suggestive message
 #
-all : bin/blib.a bin/gpxe.dsk bin/gpxe.iso bin/gpxe.usb bin/undionly.kpxe
+all : bin/blib.a bin/gpxe.dsk bin/gpxe.iso bin/gpxe.usb bin/undionly.kpxe bin/NIC
 	@$(ECHO) '==========================================================='
 	@$(ECHO)
 	@$(ECHO) 'To create a bootable floppy, type'

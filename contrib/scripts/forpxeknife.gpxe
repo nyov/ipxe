@@ -1,0 +1,8 @@
+#!gpxe
+echo "Hi, We will be using PXEKnife from URL http://www.alien.doesntexist.org/pxeknife"
+echo "It is assumed that you have dhcp networking"
+dhcp net0
+set 209:string /pxeknife.cfg/default
+set 210:string http://www.alien.doesntexist.org/pxeknife/
+echo "Here we go"
+chain http://www.alien.doesntexist.org/pxeknife/pxelinux.0
