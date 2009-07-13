@@ -1,16 +1,18 @@
 #!gpxe
-echo "Hi, We will be using PXEKnife from URL http://www.alien.doesntexist.org/pxeknife"
-echo "It is assumed that you have dhcp networking"
+echo Hi, We will be using BKO from URL http://rom.etherboot.org/share/pravin/BKO/
+echo We will try to use dhcp networking initially,
+echo Also loading pxeSTATIC.gpxe fallback script, just in case ......
+echo
 imgload pxeSTATIC.gpxe
 imgstat
+echo Opening first network interface ...
 ifopen net0
-echo "Hit Control+C to cancel DHCP"
-echo "You may want to do this if you want to use static-IP"
-echo "Otherwise, it will try DHCP, and then anyway go to static-IP"
+echo If you don't have DHCP, then hit Control+C to cancel
+echo Otherwise, we will try DHCP, and then try static-IP upon failure
 sleep 4
 dhcp net0
 set 209:string pxelinux.cfg/default
-set 210:string http://www.alien.doesntexist.org/pxeknife/
-echo "Here we go"
-chain http://www.alien.doesntexist.org/pxeknife/pxelinux.0
-echo "PxeKnife booting cancelled, using local disk instead.."
+set 210:string http://rom.etherboot.org/share/pravin/BKO/
+echo Here we go!
+chain ${210:string}pxelinux.0
+echo PxeKnife booting cancelled, using local disk instead...
