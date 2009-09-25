@@ -39,9 +39,6 @@ FILE_LICENCE ( GPL2_OR_LATER );
  *
  */
 
-/** Time to wait for link-up */
-#define LINK_WAIT_MS 15000
-
 /** Shutdown flags for exit */
 int shutdown_exit_flags = 0;
 
@@ -152,14 +149,6 @@ static int netboot ( struct net_device *netdev ) {
 	if ( ( rc = ifopen ( netdev ) ) != 0 )
 		return rc;
 	ifstat ( netdev );
-
-	/* Wait for link-up */
-	printf ( "Waiting for link-up on %s...", netdev->name );
-	if ( ( rc = iflinkwait ( netdev, LINK_WAIT_MS ) ) != 0 ) {
-		printf ( " no link detected\n" );
-		return rc;
-	}
-	printf ( " ok\n" );
 
 	/* Configure device via DHCP */
 	if ( ( rc = dhcp ( netdev ) ) != 0 )

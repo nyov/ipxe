@@ -30,7 +30,6 @@ FILE_LICENCE ( GPL2_OR_LATER );
 #include <gpxe/bitbash.h>
 #include <gpxe/malloc.h>
 #include <gpxe/iobuf.h>
-#include <gpxe/ib_sma.h>
 #include "linda.h"
 
 /**
@@ -97,9 +96,6 @@ struct linda {
 	struct i2c_bit_basher i2c;
 	/** I2C serial EEPROM */
 	struct i2c_device eeprom;
-
-	/** Subnet management agent */
-	struct ib_sma sma;
 };
 
 /***************************************************************************
@@ -235,9 +231,9 @@ static void linda_link_state_changed ( struct ib_device *ibdev ) {
 
 	/* Notify Infiniband core of link state change */
 	ibdev->port_state = ( link_state + 1 );
-	ibdev->link_width =
+	ibdev->link_width_active =
 		( link_width ? IB_LINK_WIDTH_4X : IB_LINK_WIDTH_1X );
-	ibdev->link_speed =
+	ibdev->link_speed_active =
 		( link_speed ? IB_LINK_SPEED_DDR : IB_LINK_SPEED_SDR );
 	ib_link_state_changed ( ibdev );
 }
@@ -246,11 +242,11 @@ static void linda_link_state_changed ( struct ib_device *ibdev ) {
  * Set port information
  *
  * @v ibdev		Infiniband device
- * @v port_info		New port information
+ * @v mad		Set port information MAD
  */
-static int linda_set_port_info ( struct ib_device *ibdev,
-				 const struct ib_port_info *port_info ) {
+static int linda_set_port_info ( struct ib_device *ibdev, union ib_mad *mad ) {
 	struct linda *linda = ib_get_drvdata ( ibdev );
+	struct ib_port_info *port_info = &mad->smp.smp_data.port_info;
 	struct QIB_7220_IBCCtrl ibcctrl;
 	unsigned int port_state;
 	unsigned int link_state;
@@ -272,10 +268,17 @@ static int linda_set_port_info ( struct ib_device *ibdev,
 	return 0;
 }
 
-/** Linda subnet management operations */
-static struct ib_sma_operations linda_sma_operations = {
-	.set_port_info	= linda_set_port_info,
-};
+/**
+ * Set partition key table
+ *
+ * @v ibdev		Infiniband device
+ * @v mad		Set partition key table MAD
+ */
+static int linda_set_pkey_table ( struct ib_device *ibdev __unused,
+				  union ib_mad *mad __unused ) {
+	/* Nothing to do */
+	return 0;
+}
 
 /***************************************************************************
  *
@@ -861,12 +864,10 @@ static int linda_create_qp ( struct ib_device *ibdev,
  *
  * @v ibdev		Infiniband device
  * @v qp		Queue pair
- * @v mod_list		Modification list
  * @ret rc		Return status code
  */
 static int linda_modify_qp ( struct ib_device *ibdev,
-			     struct ib_queue_pair *qp,
-			     unsigned long mod_list __unused ) {
+			     struct ib_queue_pair *qp ) {
 	struct linda *linda = ib_get_drvdata ( ibdev );
 
 	/* Nothing to do; the hardware doesn't have a notion of queue
@@ -1464,6 +1465,8 @@ static struct ib_device_operations linda_ib_operations = {
 	.close		= linda_close,
 	.mcast_attach	= linda_mcast_attach,
 	.mcast_detach	= linda_mcast_detach,
+	.set_port_info	= linda_set_port_info,
+	.set_pkey_table	= linda_set_pkey_table,
 };
 
 /***************************************************************************
@@ -1603,15 +1606,15 @@ static int linda_read_eeprom ( struct linda *linda,
 
 	/* Read GUID */
 	if ( ( rc = i2c->read ( i2c, &linda->eeprom, LINDA_EEPROM_GUID_OFFSET,
-				guid->bytes, sizeof ( *guid ) ) ) != 0 ) {
+				guid->u.bytes, sizeof ( *guid ) ) ) != 0 ) {
 		DBGC ( linda, "Linda %p could not read GUID: %s\n",
 		       linda, strerror ( rc ) );
 		return rc;
 	}
 	DBGC2 ( linda, "Linda %p has GUID %02x:%02x:%02x:%02x:%02x:%02x:"
-		"%02x:%02x\n", linda, guid->bytes[0], guid->bytes[1],
-		guid->bytes[2], guid->bytes[3], guid->bytes[4],
-		guid->bytes[5], guid->bytes[6], guid->bytes[7] );
+		"%02x:%02x\n", linda, guid->u.bytes[0], guid->u.bytes[1],
+		guid->u.bytes[2], guid->u.bytes[3], guid->u.bytes[4],
+		guid->u.bytes[5], guid->u.bytes[6], guid->u.bytes[7] );
 
 	/* Read serial number (debug only) */
 	if ( DBG_LOG ) {
@@ -2221,7 +2224,7 @@ static int linda_init_ib_serdes ( struct linda *linda ) {
 	linda_writeq ( linda, &ibcctrl, QIB_7220_IBCCtrl_offset );
 
 	/* Force SDR only to avoid needing all the DDR tuning,
-	 * Mellanox compatibiltiy hacks etc.  SDR is plenty for
+	 * Mellanox compatibility hacks etc.  SDR is plenty for
 	 * boot-time operation.
 	 */
 	linda_readq ( linda, &ibcddrctrl, QIB_7220_IBCDDRCtrl_offset );
@@ -2319,6 +2322,14 @@ static int linda_probe ( struct pci_device *pci,
 		BIT_GET ( &revision, R_ChipRevMajor ),
 		BIT_GET ( &revision, R_ChipRevMinor ) );
 
+	/* Record link capabilities.  Note that we force SDR only to
+	 * avoid having to carry extra code for DDR tuning etc.
+	 */
+	ibdev->link_width_enabled = ibdev->link_width_supported =
+		( IB_LINK_WIDTH_4X | IB_LINK_WIDTH_1X );
+	ibdev->link_speed_enabled = ibdev->link_speed_supported =
+		IB_LINK_SPEED_SDR;
+
 	/* Initialise I2C subsystem */
 	if ( ( rc = linda_init_i2c ( linda ) ) != 0 )
 		goto err_init_i2c;
@@ -2339,13 +2350,6 @@ static int linda_probe ( struct pci_device *pci,
 	if ( ( rc = linda_init_ib_serdes ( linda ) ) != 0 )
 		goto err_init_ib_serdes;
 
-	/* Create the SMA */
-	if ( ( rc = ib_create_sma ( &linda->sma, ibdev,
-				    &linda_sma_operations ) ) != 0 )
-		goto err_create_sma;
-	/* If the SMA doesn't get context 0, we're screwed */
-	assert ( linda_qpn_to_ctx ( linda->sma.qp->qpn ) == 0 );
-
 	/* Register Infiniband device */
 	if ( ( rc = register_ibdev ( ibdev ) ) != 0 ) {
 		DBGC ( linda, "Linda %p could not register IB "
@@ -2357,8 +2361,6 @@ static int linda_probe ( struct pci_device *pci,
 
 	unregister_ibdev ( ibdev );
  err_register_ibdev:
-	ib_destroy_sma ( &linda->sma );
- err_create_sma:
 	linda_fini_recv ( linda );
  err_init_recv:
 	linda_fini_send ( linda );
@@ -2381,7 +2383,6 @@ static void linda_remove ( struct pci_device *pci ) {
 	struct linda *linda = ib_get_drvdata ( ibdev );
 
 	unregister_ibdev ( ibdev );
-	ib_destroy_sma ( &linda->sma );
 	linda_fini_recv ( linda );
 	linda_fini_send ( linda );
 	ibdev_put ( ibdev );

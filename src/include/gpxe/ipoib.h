@@ -10,9 +10,6 @@ FILE_LICENCE ( GPL2_OR_LATER );
 
 #include <gpxe/infiniband.h>
 
-/** IPoIB packet length */
-#define IPOIB_PKT_LEN 2048
-
 /** IPoIB MAC address length */
 #define IPOIB_ALEN 20
 
@@ -54,29 +51,10 @@ struct ipoib_hdr {
 	} __attribute__ (( packed )) u;
 } __attribute__ (( packed ));
 
-extern struct ll_protocol ipoib_protocol;
-
 extern const char * ipoib_ntoa ( const void *ll_addr );
-
-/**
- * Allocate IPoIB device
- *
- * @v priv_size		Size of driver private data
- * @ret netdev		Network device, or NULL
- */
-static inline struct net_device * alloc_ipoibdev ( size_t priv_size ) {
-	struct net_device *netdev;
-
-	netdev = alloc_netdev ( priv_size );
-	if ( netdev ) {
-		netdev->ll_protocol = &ipoib_protocol;
-		netdev->max_pkt_len = IPOIB_PKT_LEN;
-	}
-	return netdev;
-}
-
 extern void ipoib_link_state_changed ( struct ib_device *ibdev );
 extern int ipoib_probe ( struct ib_device *ibdev );
 extern void ipoib_remove ( struct ib_device *ibdev );
+extern struct net_device * alloc_ipoibdev ( size_t priv_size );
 
 #endif /* _GPXE_IPOIB_H */

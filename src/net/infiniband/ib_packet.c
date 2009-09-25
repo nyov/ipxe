@@ -58,7 +58,7 @@ int ib_push ( struct ib_device *ibdev, struct io_buffer *iobuf,
 	unsigned int lnh;
 
 	DBGC2 ( ibdev, "IBDEV %p TX %04x:%08lx => %04x:%08lx (key %08lx)\n",
-		ibdev, ibdev->lid, qp->qpn, av->lid, av->qpn, av->qkey );
+		ibdev, ibdev->lid, qp->ext_qpn, av->lid, av->qpn, av->qkey );
 
 	/* Calculate packet length */
 	pad_len = ( (-payload_len) & 0x3 );
@@ -76,7 +76,7 @@ int ib_push ( struct ib_device *ibdev, struct io_buffer *iobuf,
 	lrh_len = ( payload_len + iob_len ( iobuf ) - orig_iob_len );
 
 	/* Construct LRH */
-	vl = ( ( av->qpn == IB_QPN_SMP ) ? IB_VL_SMP : IB_VL_DEFAULT );
+	vl = ( ( qp->ext_qpn == IB_QPN_SMI ) ? IB_VL_SMP : IB_VL_DEFAULT );
 	lrh->vl__lver = ( vl << 4 );
 	lnh = ( grh ? IB_LNH_GRH : IB_LNH_BTH );
 	lrh->sl__lnh = ( ( av->sl << 4 ) | lnh );
@@ -100,11 +100,11 @@ int ib_push ( struct ib_device *ibdev, struct io_buffer *iobuf,
 	bth->se__m__padcnt__tver = ( pad_len << 4 );
 	bth->pkey = htons ( ibdev->pkey );
 	bth->dest_qp = htonl ( av->qpn );
-	bth->ack__psn = htonl ( ( ibdev->psn++ ) & 0xffffffUL );
+	bth->ack__psn = htonl ( ( qp->send.psn++ ) & 0xffffffUL );
 
 	/* Construct DETH */
 	deth->qkey = htonl ( av->qkey );
-	deth->src_qp = htonl ( qp->qpn );
+	deth->src_qp = htonl ( qp->ext_qpn );
 
 	DBGCP_HDA ( ibdev, 0, iobuf->data,
 		    ( iob_len ( iobuf ) - orig_iob_len ) );
@@ -213,20 +213,28 @@ int ib_pull ( struct ib_device *ibdev, struct io_buffer *iobuf,
 	/* Determine destination QP, if applicable */
 	if ( qp ) {
 		if ( IB_LID_MULTICAST ( lid ) && grh ) {
-			*qp = ib_find_qp_mgid ( ibdev, &grh->dgid );
+			if ( ! ( *qp = ib_find_qp_mgid ( ibdev, &grh->dgid ))){
+				DBGC ( ibdev, "IBDEV %p RX for unknown MGID "
+				       "%08x:%08x:%08x:%08x\n", ibdev,
+				       ntohl ( grh->dgid.u.dwords[0] ),
+				       ntohl ( grh->dgid.u.dwords[1] ),
+				       ntohl ( grh->dgid.u.dwords[2] ),
+				       ntohl ( grh->dgid.u.dwords[3] ) );
+				return -ENODEV;
+			}
 		} else {
-			*qp = ib_find_qp_qpn ( ibdev, qpn );
+			if ( ! ( *qp = ib_find_qp_qpn ( ibdev, qpn ) ) ) {
+				DBGC ( ibdev, "IBDEV %p RX for nonexistent "
+				       "QPN %lx\n", ibdev, qpn );
+				return -ENODEV;
+			}
 		}
-		if ( ! *qp ) {
-			DBGC ( ibdev, "IBDEV %p RX for nonexistent QP\n",
-			       ibdev );
-			return -ENODEV;
-		}
+		assert ( *qp );
 	}
 
 	DBGC2 ( ibdev, "IBDEV %p RX %04x:%08lx <= %04x:%08lx (key %08x)\n",
-		ibdev, lid,
-		( IB_LID_MULTICAST( lid ) ? ( qp ? (*qp)->qpn : -1UL ) : qpn ),
+		ibdev, lid, ( IB_LID_MULTICAST( lid ) ?
+			      ( qp ? (*qp)->ext_qpn : -1UL ) : qpn ),
 		av->lid, av->qpn, ntohl ( deth->qkey ) );
 	DBGCP_HDA ( ibdev, 0,
 		    ( iobuf->data - ( orig_iob_len - iob_len ( iobuf ) ) ),

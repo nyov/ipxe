@@ -62,6 +62,7 @@ FILE_LICENCE ( GPL2_OR_LATER );
 
 //#undef	SANBOOT_PROTO_ISCSI	/* iSCSI protocol */
 //#undef	SANBOOT_PROTO_AOE	/* AoE protocol */
+//#undef	SANBOOT_PROTO_IB_SRP	/* Infiniband SCSI RDMA protocol */
 
 /*
  * Name resolution modules
@@ -105,6 +106,7 @@ FILE_LICENCE ( GPL2_OR_LATER );
 #define LOGIN_CMD		/* Login command */
 #define	TIME_CMD		/* Time commands */ /* enabled by pravin */
 #undef	DIGEST_CMD		/* Image crypto digest commands */
+//#undef	PXE_CMD			/* PXE commands */
 
 /*
  * Obscure configuration options

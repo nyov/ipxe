@@ -134,6 +134,16 @@ SP_FLAGS := $(shell $(SP_TEST) && $(ECHO) '-fno-stack-protector')
 CFLAGS	+= $(SP_FLAGS)
 endif
 
+# gcc 4.4 generates .eh_frame sections by default, which distort the
+# output of "size".  Inhibit this.
+#
+ifeq ($(CCTYPE),gcc)
+CFI_TEST = $(CC) -fno-dwarf2-cfi-asm -x c -c /dev/null \
+		 -o /dev/null >/dev/null 2>&1
+CFI_FLAGS := $(shell $(CFI_TEST) && $(ECHO) '-fno-dwarf2-cfi-asm')
+CFLAGS	+= $(CFI_FLAGS)
+endif
+
 # Some versions of gas choke on division operators, treating them as
 # comment markers.  Specifying --divide will work around this problem,
 # but isn't available on older gas versions.
@@ -282,6 +292,11 @@ MAKEDEPS	+= arch/$(ARCH)/Makefile
 include arch/$(ARCH)/Makefile
 endif
 
+# Include architecture-specific include path
+ifdef ARCH
+INCDIRS		+= arch/$(ARCH)/include
+endif
+
 ###############################################################################
 #
 # Source file handling
@@ -310,9 +325,13 @@ autosrcs :
 
 ifdef BIN
 
+# INCDIRS lists the include path
+incdirs :
+	@$(ECHO) $(INCDIRS)
+
 # Common flags
 #
-CFLAGS		+= -I include -I arch/$(ARCH)/include -I .
+CFLAGS		+= $(foreach INC,$(INCDIRS),-I$(INC))
 CFLAGS		+= -Os
 CFLAGS		+= -g
 ifeq ($(CCTYPE),gcc)
@@ -943,19 +962,23 @@ endif # defined(BIN)
 ifdef BIN
 
 $(BIN)/doxygen.cfg : doxygen.cfg $(MAKEDEPS)
-	$(PERL) -pe 's{\@SRCDIRS\@}{$(SRCDIRS)}; ' \
+	$(Q)$(PERL) -pe 's{\@SRCDIRS\@}{$(SRCDIRS)}; ' \
+		-e  's{\@INCDIRS\@}{$(filter-out .,$(INCDIRS))}; ' \
 		-e  's{\@BIN\@}{$(BIN)}; ' \
 		-e  's{\@ARCH\@}{$(ARCH)}; ' \
 		$< > $@
 
 $(BIN)/doc : $(BIN)/doxygen.cfg
-	$(DOXYGEN) $<
+	$(Q)$(DOXYGEN) $<
 
 .PHONY : $(BIN)/doc
 
-VERYCLEANUP	+= $(BIN)/doc
-
 doc : $(BIN)/doc
+
+doc-clean :
+	$(Q)$(RM) -r $(BIN)/doc
+
+VERYCLEANUP	+= $(BIN)/doc
 
 docview :
 	@[ -f $(BIN)/doc/html/index.html ] || $(MAKE) $(BIN)/doc

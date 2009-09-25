@@ -37,6 +37,7 @@ FILE_LICENCE ( GPL2_OR_LATER );
 #include <gpxe/init.h>
 #include <gpxe/if_ether.h>
 #include <basemem_packet.h>
+#include <biosint.h>
 #include "pxe.h"
 #include "pxe_call.h"
 
@@ -296,11 +297,8 @@ PXENV_EXIT_t pxenv_start_undi ( struct s_PXENV_START_UNDI *start_undi ) {
 	}
 	DBG ( " using netdev %s", netdev->name );
 
-	/* Save as PXE net device */
-	pxe_set_netdev ( netdev );
-
-	/* Hook INT 1A */
-	pxe_hook_int1a();
+	/* Activate PXE */
+	pxe_activate ( netdev );
 
 	start_undi->Status = PXENV_STATUS_SUCCESS;
 	return PXENV_EXIT_SUCCESS;
@@ -313,14 +311,19 @@ PXENV_EXIT_t pxenv_start_undi ( struct s_PXENV_START_UNDI *start_undi ) {
 PXENV_EXIT_t pxenv_stop_undi ( struct s_PXENV_STOP_UNDI *stop_undi ) {
 	DBG ( "PXENV_STOP_UNDI" );
 
-	/* Unhook INT 1A */
-	pxe_unhook_int1a();
-
-	/* Clear PXE net device */
-	pxe_set_netdev ( NULL );
+	/* Deactivate PXE */
+	pxe_deactivate();
 
 	/* Prepare for unload */
 	shutdown ( SHUTDOWN_BOOT );
+
+	/* Check to see if we still have any hooked interrupts */
+	if ( hooked_bios_interrupts != 0 ) {
+		DBG ( "PXENV_STOP_UNDI failed: %d interrupts still hooked\n",
+		      hooked_bios_interrupts );
+		stop_undi->Status = PXENV_STATUS_KEEP_UNDI;
+		return PXENV_EXIT_FAILURE;
+	}
 
 	stop_undi->Status = PXENV_STATUS_SUCCESS;
 	return PXENV_EXIT_SUCCESS;

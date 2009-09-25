@@ -55,12 +55,14 @@ SRCDIRS		:=
 SRCDIRS		+= libgcc
 SRCDIRS		+= core
 SRCDIRS		+= proto
-SRCDIRS		+= net net/tcp net/udp
+SRCDIRS		+= net net/tcp net/udp net/infiniband net/80211
 SRCDIRS		+= image
 SRCDIRS		+= drivers/bus
 SRCDIRS		+= drivers/net
 SRCDIRS		+= drivers/net/e1000
 SRCDIRS		+= drivers/net/phantom
+SRCDIRS		+= drivers/net/rtl818x
+SRCDIRS		+= drivers/net/ath5k
 SRCDIRS		+= drivers/block
 SRCDIRS		+= drivers/nvs
 SRCDIRS		+= drivers/bitbash
@@ -77,6 +79,11 @@ SRCDIRS		+= usr
 #
 NON_AUTO_SRCS	:=
 NON_AUTO_SRCS	+= drivers/net/prism2.c
+
+# INCDIRS lists the include path
+#
+INCDIRS		:=
+INCDIRS		+= include .
 
 ###############################################################################
 #

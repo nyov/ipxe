@@ -15,6 +15,31 @@
  * You should have received a copy of the GNU General Public License
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+ *
+ * As an alternative, at your option, you may use this file under the
+ * following terms, known as the "MIT license":
+ *
+ * Copyright (c) 2005-2009 Michael Brown <mbrown@fensystems.co.uk>
+ *
+ * Permission is hereby granted, free of charge, to any person
+ * obtaining a copy of this software and associated documentation
+ * files (the "Software"), to deal in the Software without
+ * restriction, including without limitation the rights to use, copy,
+ * modify, merge, publish, distribute, sublicense, and/or sell copies
+ * of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be
+ * included in all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+ * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+ * NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
+ * BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
+ * ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+ * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
  */
 
 /** @file
@@ -1416,6 +1441,25 @@ extern PXENV_EXIT_t pxenv_undi_get_nic_type (
 
 /** PXE API function code for pxenv_undi_get_iface_info() */
 #define	PXENV_UNDI_GET_IFACE_INFO	0x0013
+
+/** Broadcast supported */
+#define SUPPORTED_BROADCAST		0x0001
+/** Multicast supported */
+#define SUPPORTED_MULTICAST		0x0002
+/** Functional/group addressing supported */
+#define SUPPORTED_GROUP			0x0004
+/** Promiscuous mode supported */
+#define SUPPORTED_PROMISCUOUS		0x0008
+/** Software settable station address */
+#define SUPPORTED_SET_STATION_ADDRESS	0x0010
+/** InitiateDiagnostics supported */
+#define SUPPORTED_DIAGNOSTICS		0x0040
+/** Reset MAC supported */
+#define SUPPORTED_RESET			0x0400
+/** Open / Close Adapter supported */
+#define SUPPORTED_OPEN_CLOSE		0x0800
+/** Interrupt Request supported */
+#define SUPPORTED_IRQ			0x1000
 
 /** Parameter block for pxenv_undi_get_iface_info() */
 struct s_PXENV_UNDI_GET_IFACE_INFO {

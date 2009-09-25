@@ -224,6 +224,8 @@ struct dhcp_session {
 	int no_pxedhcp;
 	/** ProxyDHCP server */
 	struct in_addr proxy_server;
+	/** ProxyDHCP port */
+	uint16_t proxy_port;
 	/** ProxyDHCP server priority */
 	int proxy_priority;
 
@@ -335,6 +337,8 @@ static void dhcp_discovery_rx ( struct dhcp_session *dhcp,
 	char vci[9]; /* "PXEClient" */
 	int vci_len;
 	int has_pxeclient;
+	int pxeopts_len;
+	int has_pxeopts;
 	int8_t priority = 0;
 	uint8_t no_pxedhcp = 0;
 	unsigned long elapsed;
@@ -355,8 +359,12 @@ static void dhcp_discovery_rx ( struct dhcp_session *dhcp,
 				  vci, sizeof ( vci ) );
 	has_pxeclient = ( ( vci_len >= ( int ) sizeof ( vci ) ) &&
 			  ( strncmp ( "PXEClient", vci, sizeof (vci) ) == 0 ));
+
+	/* Identify presence of vendor-specific options */
+	pxeopts_len = dhcppkt_fetch ( dhcppkt, DHCP_VENDOR_ENCAP, NULL, 0 );
+	has_pxeopts = ( pxeopts_len >= 0 );
 	if ( has_pxeclient )
-		DBGC ( dhcp, " pxe" );
+		DBGC ( dhcp, "%s", ( has_pxeopts ? " pxe" : " proxy" ) );
 
 	/* Identify priority */
 	dhcppkt_fetch ( dhcppkt, DHCP_EB_PRIORITY, &priority,
@@ -384,7 +392,15 @@ static void dhcp_discovery_rx ( struct dhcp_session *dhcp,
 	/* Select as ProxyDHCP offer, if applicable */
 	if ( has_pxeclient && ( msgtype == DHCPOFFER ) &&
 	     ( priority >= dhcp->proxy_priority ) ) {
+		/* If the offer already includes the PXE options, then
+		 * assume that we can send the ProxyDHCPREQUEST to
+		 * port 67 (since the DHCPDISCOVER that triggered this
+		 * ProxyDHCPOFFER was sent to port 67).  Otherwise,
+		 * send the ProxyDHCPREQUEST to port 4011.
+		 */
 		dhcp->proxy_server = server_id;
+		dhcp->proxy_port = ( has_pxeopts ? htons ( BOOTPS_PORT )
+				     : htons ( PXE_PORT ) );
 		dhcp->proxy_priority = priority;
 	}
 
@@ -523,7 +539,11 @@ static void dhcp_request_rx ( struct dhcp_session *dhcp,
 	}
 
 	/* Start ProxyDHCPREQUEST if applicable */
-	if ( dhcp->proxy_server.s_addr && ( ! dhcp->no_pxedhcp ) ) {
+	if ( dhcp->proxy_server.s_addr /* Have ProxyDHCP server */ &&
+	     ( ! dhcp->no_pxedhcp ) /* ProxyDHCP not disabled */ &&
+	     ( /* ProxyDHCP server is not just the DHCP server itself */
+	       ( dhcp->proxy_server.s_addr != dhcp->server.s_addr ) ||
+	       ( dhcp->proxy_port != htons ( BOOTPS_PORT ) ) ) ) {
 		dhcp_set_state ( dhcp, &dhcp_state_proxy );
 		return;
 	}
@@ -565,8 +585,8 @@ static int dhcp_proxy_tx ( struct dhcp_session *dhcp,
 			   struct sockaddr_in *peer ) {
 	int rc;
 
-	DBGC ( dhcp, "DHCP %p ProxyDHCP REQUEST to %s:%d\n",
-	       dhcp, inet_ntoa ( dhcp->proxy_server ), PXE_PORT );
+	DBGC ( dhcp, "DHCP %p ProxyDHCP REQUEST to %s:%d\n", dhcp,
+	       inet_ntoa ( dhcp->proxy_server ), ntohs ( dhcp->proxy_port ) );
 
 	/* Set server ID */
 	if ( ( rc = dhcppkt_store ( dhcppkt, DHCP_SERVER_IDENTIFIER,
@@ -576,7 +596,7 @@ static int dhcp_proxy_tx ( struct dhcp_session *dhcp,
 
 	/* Set server address */
 	peer->sin_addr = dhcp->proxy_server;
-	peer->sin_port = htons ( PXE_PORT );
+	peer->sin_port = dhcp->proxy_port;
 
 	return 0;
 }
@@ -604,7 +624,7 @@ static void dhcp_proxy_rx ( struct dhcp_session *dhcp,
 	DBGC ( dhcp, "\n" );
 
 	/* Filter out unacceptable responses */
-	if ( peer->sin_port != htons ( PXE_PORT ) )
+	if ( peer->sin_port != dhcp->proxy_port )
 		return;
 	if ( msgtype != DHCPACK )
 		return;
@@ -666,8 +686,13 @@ static int dhcp_pxebs_tx ( struct dhcp_session *dhcp,
 	struct dhcp_pxe_boot_menu_item menu_item = { 0, 0 };
 	int rc;
 
+	/* Set server address */
+	peer->sin_addr = *(dhcp->pxe_attempt);
+	peer->sin_port = ( ( peer->sin_addr.s_addr == INADDR_BROADCAST ) ?
+			   htons ( BOOTPS_PORT ) : htons ( PXE_PORT ) );
+
 	DBGC ( dhcp, "DHCP %p PXEBS REQUEST to %s:%d for type %d\n",
-	       dhcp, inet_ntoa ( *(dhcp->pxe_attempt) ), PXE_PORT,
+	       dhcp, inet_ntoa ( peer->sin_addr ), ntohs ( peer->sin_port ),
 	       ntohs ( dhcp->pxe_type ) );
 
 	/* Set boot menu item */
@@ -675,10 +700,6 @@ static int dhcp_pxebs_tx ( struct dhcp_session *dhcp,
 	if ( ( rc = dhcppkt_store ( dhcppkt, DHCP_PXE_BOOT_MENU_ITEM,
 				    &menu_item, sizeof ( menu_item ) ) ) != 0 )
 		return rc;
-
-	/* Set server address */
-	peer->sin_addr = *(dhcp->pxe_attempt);
-	peer->sin_port = htons ( PXE_PORT );
 
 	return 0;
 }
@@ -739,7 +760,8 @@ static void dhcp_pxebs_rx ( struct dhcp_session *dhcp,
 	DBGC ( dhcp, "\n" );
 
 	/* Filter out unacceptable responses */
-	if ( peer->sin_port != htons ( PXE_PORT ) )
+	if ( ( peer->sin_port != htons ( BOOTPS_PORT ) ) &&
+	     ( peer->sin_port != htons ( PXE_PORT ) ) )
 		return;
 	if ( msgtype != DHCPACK )
 		return;
@@ -805,6 +827,46 @@ static struct dhcp_session_state dhcp_state_pxebs = {
  */
 
 /**
+ * Construct DHCP client hardware address field and broadcast flag
+ *
+ * @v netdev		Network device
+ * @v hlen		DHCP hardware address length to fill in
+ * @v flags		DHCP flags to fill in
+ * @ret chaddr		DHCP client hardware address
+ */
+void * dhcp_chaddr ( struct net_device *netdev, uint8_t *hlen,
+		     uint16_t *flags ) {
+	struct ll_protocol *ll_protocol = netdev->ll_protocol;
+	typeof ( ( ( struct dhcphdr * ) NULL )->chaddr ) chaddr;
+
+	/* If the link-layer address cannot fit into the chaddr field
+	 * (as is the case for IPoIB) then try using the hardware
+	 * address instead.  If we do this, set the broadcast flag,
+	 * since chaddr then does not represent a valid link-layer
+	 * address for the return path.
+	 *
+	 * If even the hardware address is too large, use an empty
+	 * chaddr field and set the broadcast flag.
+	 *
+	 * This goes against RFC4390, but RFC4390 mandates that we use
+	 * a DHCP client identifier that conforms with RFC4361, which
+	 * we cannot do without either persistent (NIC-independent)
+	 * storage, or by eliminating the hardware address completely
+	 * from the DHCP packet, which seems unfriendly to users.
+	 */
+	if ( ( *hlen = ll_protocol->ll_addr_len ) <= sizeof ( chaddr ) ) {
+		return netdev->ll_addr;
+	}
+	*flags = htons ( BOOTP_FL_BROADCAST );
+	if ( ( *hlen = ll_protocol->hw_addr_len ) <= sizeof ( chaddr ) ) {
+		return netdev->hw_addr;
+	} else {
+		*hlen = 0;
+		return NULL;
+	}
+}
+
+/**
  * Create a DHCP packet
  *
  * @v dhcppkt		DHCP packet structure to fill in
@@ -824,7 +886,7 @@ int dhcp_create_packet ( struct dhcp_packet *dhcppkt,
 			 const void *options, size_t options_len,
 			 void *data, size_t max_len ) {
 	struct dhcphdr *dhcphdr = data;
-	unsigned int hlen;
+	void *chaddr;
 	int rc;
 
 	/* Sanity check */
@@ -837,16 +899,8 @@ int dhcp_create_packet ( struct dhcp_packet *dhcppkt,
 	dhcphdr->magic = htonl ( DHCP_MAGIC_COOKIE );
 	dhcphdr->htype = ntohs ( netdev->ll_protocol->ll_proto );
 	dhcphdr->op = dhcp_op[msgtype];
-	/* If hardware length exceeds the chaddr field length, don't
-	 * use the chaddr field.  This is as per RFC4390.
-	 */
-	hlen = netdev->ll_protocol->ll_addr_len;
-	if ( hlen > sizeof ( dhcphdr->chaddr ) ) {
-		hlen = 0;
-		dhcphdr->flags = htons ( BOOTP_FL_BROADCAST );
-	}
-	dhcphdr->hlen = hlen;
-	memcpy ( dhcphdr->chaddr, netdev->ll_addr, hlen );
+	chaddr = dhcp_chaddr ( netdev, &dhcphdr->hlen, &dhcphdr->flags );
+	memcpy ( dhcphdr->chaddr, chaddr, dhcphdr->hlen );
 	memcpy ( dhcphdr->options, options, options_len );
 
 	/* Initialise DHCP packet structure */
