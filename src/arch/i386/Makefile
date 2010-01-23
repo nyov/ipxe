@@ -69,7 +69,7 @@ CFLAGS			+= -Ui386
 
 # Locations of utilities
 #
-ISOLINUX_BIN	= /usr/lib/syslinux/isolinux.bin
+ISOLINUX_BIN	= /usr/share/syslinux/isolinux.bin
 
 # i386-specific directories containing source files
 #
