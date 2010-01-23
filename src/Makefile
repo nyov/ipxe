@@ -73,6 +73,7 @@ SRCDIRS		+= crypto crypto/axtls crypto/matrixssl
 SRCDIRS		+= hci hci/commands hci/tui
 SRCDIRS		+= hci/mucurses hci/mucurses/widgets
 SRCDIRS		+= usr
+SRCDIRS		+= config
 
 # NON_AUTO_SRCS lists files that are excluded from the normal
 # automatic build system.
@@ -129,7 +130,7 @@ install :
 #
 VERSION_MAJOR	= 0
 VERSION_MINOR	= 9
-VERSION_PATCH	= 7
+VERSION_PATCH	= 9
 EXTRAVERSION	= +
 MM_VERSION	= $(VERSION_MAJOR).$(VERSION_MINOR)
 VERSION		= $(MM_VERSION).$(VERSION_PATCH)$(EXTRAVERSION)

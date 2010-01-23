@@ -81,13 +81,13 @@ static int read_file ( const char *filename, void **buf, size_t *len ) {
 	*len = stat.st_size;
 	*buf = malloc ( *len );
 	if ( ! *buf ) {
-		fprintf ( stderr, "Could not malloc() %d bytes for %s: %s\n",
+		fprintf ( stderr, "Could not malloc() %zd bytes for %s: %s\n",
 			  *len, filename, strerror ( errno ) );
 		goto err;
 	}
 
 	if ( fread ( *buf, 1, *len, file ) != *len ) {
-		fprintf ( stderr, "Could not read %d bytes from %s: %s\n",
+		fprintf ( stderr, "Could not read %zd bytes from %s: %s\n",
 			  *len, filename, strerror ( errno ) );
 		goto err;
 	}
@@ -115,7 +115,7 @@ static int read_zinfo_file ( const char *filename,
 		return -1;
 
 	if ( ( len % sizeof ( *(zinfo->zinfo) ) ) != 0 ) {
-		fprintf ( stderr, ".zinfo file %s has invalid length %d\n",
+		fprintf ( stderr, ".zinfo file %s has invalid length %zd\n",
 			  filename, len );
 		return -1;
 	}
@@ -130,7 +130,7 @@ static int alloc_output_file ( size_t max_len, struct output_file *output ) {
 	output->max_len = ( max_len );
 	output->buf = malloc ( max_len );
 	if ( ! output->buf ) {
-		fprintf ( stderr, "Could not allocate %d bytes for output\n",
+		fprintf ( stderr, "Could not allocate %zd bytes for output\n",
 			  max_len );
 		return -1;
 	}
@@ -197,7 +197,7 @@ static int process_zinfo_pack ( struct input_file *input,
 	if ( DEBUG ) {
 		fprintf ( stderr, "PACK [%#zx,%#zx) to [%#zx,%#zx)\n",
 			  offset, ( offset + len ), output->len,
-			  ( output->len + packed_len ) );
+			  ( size_t )( output->len + packed_len ) );
 	}
 
 	output->len += packed_len;
@@ -240,7 +240,7 @@ static int process_zinfo_add ( struct input_file *input,
 		addend = *( ( int32_t * ) target );
 		break;
 	default:
-		fprintf ( stderr, "Unsupported add datasize %d\n",
+		fprintf ( stderr, "Unsupported add datasize %zd\n",
 			  datasize );
 		return -1;
 	}
@@ -252,18 +252,18 @@ static int process_zinfo_add ( struct input_file *input,
 		 ( ( 1UL << ( 8 * datasize ) ) - 1 ) : ~0UL );
 
 	if ( val < 0 ) {
-		fprintf ( stderr, "Add %s%#lx+%#lx at %#zx %sflows field\n",
+		fprintf ( stderr, "Add %s%#x+%#lx at %#zx %sflows field\n",
 			  ( ( addend < 0 ) ? "-" : "" ), abs ( addend ), size,
 			  offset, ( ( addend < 0 ) ? "under" : "over" ) );
 		return -1;
 	}
 
 	if ( val & ~mask ) {
-		fprintf ( stderr, "Add %s%#lx+%#lx at %#zx overflows %d-byte "
+		fprintf ( stderr, "Add %s%#x+%#lx at %#zx overflows %zd-byte "
 			  "field (%d bytes too big)\n",
 			  ( ( addend < 0 ) ? "-" : "" ), abs ( addend ), size,
 			  offset, datasize,
-			  ( ( val - mask - 1 ) * add->divisor ) );
+			  ( int )( ( val - mask - 1 ) * add->divisor ) );
 		return -1;
 	}
 
@@ -280,7 +280,7 @@ static int process_zinfo_add ( struct input_file *input,
 	}
 
 	if ( DEBUG ) {
-		fprintf ( stderr, "ADDx [%#zx,%#zx) (%s%#lx+(%#lx/%#x)) = "
+		fprintf ( stderr, "ADDx [%#zx,%#zx) (%s%#x+(%#zx/%#x)) = "
 			  "%#lx\n", offset, ( offset + datasize ),
 			  ( ( addend < 0 ) ? "-" : "" ), abs ( addend ),
 			  output->len, add->divisor, val );
@@ -344,7 +344,7 @@ static int process_zinfo ( struct input_file *input,
 
 static int write_output_file ( struct output_file *output ) {
 	if ( fwrite ( output->buf, 1, output->len, stdout ) != output->len ) {
-		fprintf ( stderr, "Could not write %d bytes of output: %s\n",
+		fprintf ( stderr, "Could not write %zd bytes of output: %s\n",
 			  output->len, strerror ( errno ) );
 		return -1;
 	}

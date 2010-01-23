@@ -133,6 +133,8 @@ enum {
 	TFTP_FL_RRQ_MULTICAST = 0x0004,
 	/** Perform MTFTP recovery on timeout */
 	TFTP_FL_MTFTP_RECOVERY = 0x0008,
+	/** Only get filesize and then abort the transfer */
+	TFTP_FL_SIZEONLY = 0x0010,
 };
 
 /** Maximum number of MTFTP open requests before falling back to TFTP */
@@ -411,6 +413,42 @@ static int tftp_send_ack ( struct tftp_request *tftp ) {
 }
 
 /**
+ * Transmit ERROR (Abort)
+ *
+ * @v tftp		TFTP connection
+ * @v errcode		TFTP error code
+ * @v errmsg		Error message string
+ * @ret rc		Return status code
+ */
+static int tftp_send_error ( struct tftp_request *tftp, int errcode,
+			     const char *errmsg ) {
+	struct tftp_error *err;
+	struct io_buffer *iobuf;
+	struct xfer_metadata meta = {
+		.dest = ( struct sockaddr * ) &tftp->peer,
+	};
+	size_t msglen;
+
+	DBGC2 ( tftp, "TFTP %p sending ERROR %d: %s\n", tftp, errcode,
+		errmsg );
+
+	/* Allocate buffer */
+	msglen = sizeof ( *err ) + strlen ( errmsg ) + 1 /* NUL */;
+	iobuf = xfer_alloc_iob ( &tftp->socket, msglen );
+	if ( ! iobuf )
+		return -ENOMEM;
+
+	/* Build ERROR */
+	err = iob_put ( iobuf, msglen );
+	err->opcode = htons ( TFTP_ERROR );
+	err->errcode = htons ( errcode );
+	strcpy ( err->errmsg, errmsg );
+
+	/* ERR always goes to the peer recorded from the RRQ response */
+	return xfer_deliver_iob_meta ( &tftp->socket, iobuf, &meta );
+}
+
+/**
  * Transmit next relevant packet
  *
  * @v tftp		TFTP connection
@@ -418,9 +456,16 @@ static int tftp_send_ack ( struct tftp_request *tftp ) {
  */
 static int tftp_send_packet ( struct tftp_request *tftp ) {
 
-	/* Update retransmission timer */
+	/* Update retransmission timer.  While name resolution takes place the
+	 * window is zero.  Avoid unnecessary delay after name resolution
+	 * completes by retrying immediately.
+	 */
 	stop_timer ( &tftp->timer );
-	start_timer ( &tftp->timer );
+	if ( xfer_window ( &tftp->socket ) ) {
+		start_timer ( &tftp->timer );
+	} else {
+		start_timer_nodelay ( &tftp->timer );
+	}
 
 	/* Send RRQ or ACK as appropriate */
 	if ( ! tftp->peer.st_family ) {
@@ -725,6 +770,14 @@ static int tftp_rx_oack ( struct tftp_request *tftp, void *buf, size_t len ) {
 			goto done;
 	}
 
+	/* Abort request if only trying to determine file size */
+	if ( tftp->flags & TFTP_FL_SIZEONLY ) {
+		rc = 0;
+		tftp_send_error ( tftp, 0, "TFTP Aborted" );
+		tftp_done ( tftp, rc );
+		return rc;
+	}
+
 	/* Request next data block */
 	tftp_send_packet ( tftp );
 
@@ -747,10 +800,17 @@ static int tftp_rx_data ( struct tftp_request *tftp,
 			  struct io_buffer *iobuf ) {
 	struct tftp_data *data = iobuf->data;
 	struct xfer_metadata meta;
-	int block;
+	unsigned int block;
 	off_t offset;
 	size_t data_len;
 	int rc;
+
+	if ( tftp->flags & TFTP_FL_SIZEONLY ) {
+		/* If we get here then server doesn't support SIZE option */
+		rc = -ENOTSUP;
+		tftp_send_error ( tftp, 0, "TFTP Aborted" );
+		goto done;
+	}
 
 	/* Sanity check */
 	if ( iob_len ( iobuf ) < sizeof ( *data ) ) {
@@ -759,14 +819,17 @@ static int tftp_rx_data ( struct tftp_request *tftp,
 		rc = -EINVAL;
 		goto done;
 	}
-	if ( data->block == 0 ) {
+
+	/* Calculate block number */
+	block = ( ( bitmap_first_gap ( &tftp->bitmap ) + 1 ) & ~0xffff );
+	if ( data->block == 0 && block == 0 ) {
 		DBGC ( tftp, "TFTP %p received data block 0\n", tftp );
 		rc = -EINVAL;
 		goto done;
 	}
+	block += ( ntohs ( data->block ) - 1 );
 
 	/* Extract data */
-	block = ( ntohs ( data->block ) - 1 );
 	offset = ( block * tftp->blksize );
 	iob_pull ( iobuf, sizeof ( *data ) );
 	data_len = iob_len ( iobuf );
@@ -1108,6 +1171,26 @@ static int tftp_open ( struct xfer_interface *xfer, struct uri *uri ) {
 struct uri_opener tftp_uri_opener __uri_opener = {
 	.scheme	= "tftp",
 	.open	= tftp_open,
+};
+
+/**
+ * Initiate TFTP-size request
+ *
+ * @v xfer		Data transfer interface
+ * @v uri		Uniform Resource Identifier
+ * @ret rc		Return status code
+ */
+static int tftpsize_open ( struct xfer_interface *xfer, struct uri *uri ) {
+	return tftp_core_open ( xfer, uri, TFTP_PORT, NULL,
+				( TFTP_FL_RRQ_SIZES |
+				  TFTP_FL_SIZEONLY ) );
+
+}
+
+/** TFTP URI opener */
+struct uri_opener tftpsize_uri_opener __uri_opener = {
+	.scheme	= "tftpsize",
+	.open	= tftpsize_open,
 };
 
 /**

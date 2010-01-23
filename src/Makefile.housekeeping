@@ -410,7 +410,7 @@ endif
 #
 COMPILE_c	= $(CC) $(CFLAGS) $(CFLAGS_c) $(OBJ_CFLAGS)
 RULE_c		= $(Q)$(COMPILE_c) -c $< -o $@ $(POST_O)
-RULE_c_to_dbg%.o = $(Q)$(COMPILE_c) -Ddebug_$(OBJECT)=$* -c $< -o $@ $(POST_O)
+RULE_c_to_dbg%.o = $(Q)$(COMPILE_c) -Ddebug_$(subst -,_,$(OBJECT))=$* -c $< -o $@ $(POST_O)
 RULE_c_to_c	= $(Q)$(COMPILE_c) -E -c $< > $@
 RULE_c_to_s	= $(Q)$(COMPILE_c) -S -g0 -c $< -o $@
 
@@ -677,7 +677,7 @@ endef
 $(BIN)/%.objs : $(BIN)/%.tmp
 	$(Q)$(ECHO) $(call objs_list,$<)
 $(BIN)/%.sizes : $(BIN)/%.tmp
-	$(Q)$(SIZE) -t $(foreach OBJ,$(call objs_list,$<),$(BIN)/$(OBJ).o) | \
+	$(Q)$(SIZE) -t $(foreach OBJ,$(call objs_list,$<),$(wildcard $(BIN)/$(subst _,?,$(OBJ)).o)) | \
 		sort -g
 
 # Get dependency list for the specified target
@@ -830,6 +830,9 @@ endif # defined(BIN)
 #
 FINALISE_rom	= $(MAKEROM) $(MAKEROM_FLAGS) $(TGT_MAKEROM_FLAGS) \
 		  -i$(IDENT) -s 0 $@
+FINALISE_hrom	= $(FINALISE_rom)
+FINALISE_xrom	= $(MAKEROM) $(MAKEROM_FLAGS) $(TGT_MAKEROM_FLAGS) \
+		  -i$(IDENT) -n -s 0 $@
 
 # Some ROMs require specific flags to be passed to makerom.pl
 #

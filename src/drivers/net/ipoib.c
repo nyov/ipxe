@@ -24,6 +24,7 @@ FILE_LICENCE ( GPL2_OR_LATER );
 #include <string.h>
 #include <byteswap.h>
 #include <errno.h>
+#include <gpxe/errortab.h>
 #include <gpxe/if_arp.h>
 #include <gpxe/iobuf.h>
 #include <gpxe/netdevice.h>
@@ -70,9 +71,17 @@ struct ipoib_device {
 
 /** Broadcast IPoIB address */
 static struct ipoib_mac ipoib_broadcast = {
-	.qpn = htonl ( IB_QPN_BROADCAST ),
+	.flags__qpn = htonl ( IB_QPN_BROADCAST ),
 	.gid.u.bytes = 	{ 0xff, 0x12, 0x40, 0x1b, 0x00, 0x00, 0x00, 0x00,
 			  0x00, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff },
+};
+
+/** Link status for "broadcast join in progress" */
+#define EINPROGRESS_JOINING ( EINPROGRESS | EUNIQ_01 )
+
+/** Human-readable message for the link status */
+struct errortab ipoib_errors[] __errortab = {
+	{ EINPROGRESS_JOINING, "Joining" },
 };
 
 /****************************************************************************
@@ -137,8 +146,7 @@ static struct ipoib_peer * ipoib_lookup_peer_by_key ( unsigned int key ) {
 /**
  * Store GID and QPN in peer cache
  *
- * @v gid		Peer GID
- * @v qpn		Peer QPN
+ * @v mac		Peer MAC address
  * @ret peer		Peer cache entry
  */
 static struct ipoib_peer * ipoib_cache_peer ( const struct ipoib_mac *mac ) {
@@ -274,7 +282,7 @@ const char * ipoib_ntoa ( const void *ll_addr ) {
 	const struct ipoib_mac *mac = ll_addr;
 
 	snprintf ( buf, sizeof ( buf ), "%08x:%08x:%08x:%08x:%08x",
-		   htonl ( mac->qpn ), htonl ( mac->gid.u.dwords[0] ),
+		   htonl ( mac->flags__qpn ), htonl ( mac->gid.u.dwords[0] ),
 		   htonl ( mac->gid.u.dwords[1] ),
 		   htonl ( mac->gid.u.dwords[2] ),
 		   htonl ( mac->gid.u.dwords[3] ) );
@@ -296,6 +304,62 @@ static int ipoib_mc_hash ( unsigned int af __unused,
 	return -ENOTSUP;
 }
 
+/**
+ * Generate Mellanox Ethernet-compatible compressed link-layer address
+ *
+ * @v ll_addr		Link-layer address
+ * @v eth_addr		Ethernet-compatible address to fill in
+ */
+static int ipoib_mlx_eth_addr ( const struct ib_gid_half *guid,
+				uint8_t *eth_addr ) {
+	eth_addr[0] = ( ( guid->u.bytes[3] == 2 ) ? 0x00 : 0x02 );
+	eth_addr[1] = guid->u.bytes[1];
+	eth_addr[2] = guid->u.bytes[2];
+	eth_addr[3] = guid->u.bytes[5];
+	eth_addr[4] = guid->u.bytes[6];
+	eth_addr[5] = guid->u.bytes[7];
+	return 0;
+}
+
+/** An IPoIB Ethernet-compatible compressed link-layer address generator */
+struct ipoib_eth_addr_handler {
+	/** GUID byte 1 */
+	uint8_t byte1;
+	/** GUID byte 2 */
+	uint8_t byte2;
+	/** Handler */
+	int ( * eth_addr ) ( const struct ib_gid_half *guid,
+			     uint8_t *eth_addr );
+};
+
+/** IPoIB Ethernet-compatible compressed link-layer address generators */
+static struct ipoib_eth_addr_handler ipoib_eth_addr_handlers[] = {
+	{ 0x02, 0xc9, ipoib_mlx_eth_addr },
+};
+
+/**
+ * Generate Ethernet-compatible compressed link-layer address
+ *
+ * @v ll_addr		Link-layer address
+ * @v eth_addr		Ethernet-compatible address to fill in
+ */
+static int ipoib_eth_addr ( const void *ll_addr, void *eth_addr ) {
+	const struct ipoib_mac *ipoib_addr = ll_addr;
+	const struct ib_gid_half *guid = &ipoib_addr->gid.u.half[1];
+	struct ipoib_eth_addr_handler *handler;
+	unsigned int i;
+
+	for ( i = 0 ; i < ( sizeof ( ipoib_eth_addr_handlers ) /
+			    sizeof ( ipoib_eth_addr_handlers[0] ) ) ; i++ ) {
+		handler = &ipoib_eth_addr_handlers[i];
+		if ( ( handler->byte1 == guid->u.bytes[1] ) &&
+		     ( handler->byte2 == guid->u.bytes[2] ) ) {
+			return handler->eth_addr ( guid, eth_addr );
+		}
+	}
+	return -ENOTSUP;
+}
+
 /** IPoIB protocol */
 struct ll_protocol ipoib_protocol __ll_protocol = {
 	.name		= "IPoIB",
@@ -308,6 +372,7 @@ struct ll_protocol ipoib_protocol __ll_protocol = {
 	.init_addr	= ipoib_init_addr,
 	.ntoa		= ipoib_ntoa,
 	.mc_hash	= ipoib_mc_hash,
+	.eth_addr	= ipoib_eth_addr,
 };
 
 /**
@@ -372,7 +437,7 @@ static int ipoib_transmit ( struct net_device *netdev,
 
 	/* Construct address vector */
 	memset ( &av, 0, sizeof ( av ) );
-	av.qpn = ntohl ( dest->mac.qpn );
+	av.qpn = ( ntohl ( dest->mac.flags__qpn ) & IB_QPN_MASK );
 	av.gid_present = 1;
 	memcpy ( &av.gid, &dest->mac.gid, sizeof ( av.gid ) );
 	if ( ( rc = ib_resolve_path ( ibdev, &av ) ) != 0 ) {
@@ -435,7 +500,7 @@ static void ipoib_complete_recv ( struct ib_device *ibdev __unused,
 
 	/* Parse source address */
 	if ( av->gid_present ) {
-		ll_src.qpn = htonl ( av->qpn );
+		ll_src.flags__qpn = htonl ( av->qpn );
 		memcpy ( &ll_src.gid, &av->gid, sizeof ( ll_src.gid ) );
 		src = ipoib_cache_peer ( &ll_src );
 		ipoib_hdr->u.peer.src = src->key;
@@ -571,7 +636,7 @@ static int ipoib_open ( struct net_device *netdev ) {
 	ib_qp_set_ownerdata ( ipoib->qp, ipoib );
 
 	/* Update MAC address with QPN */
-	mac->qpn = htonl ( ipoib->qp->qpn );
+	mac->flags__qpn = htonl ( ipoib->qp->qpn );
 
 	/* Fill receive rings */
 	ib_refill_recv ( ibdev, ipoib->qp );
@@ -604,7 +669,7 @@ static void ipoib_close ( struct net_device *netdev ) {
 	ipoib_leave_broadcast_group ( ipoib );
 
 	/* Remove QPN from MAC address */
-	mac->qpn = 0;
+	mac->flags__qpn = 0;
 
 	/* Tear down the queues */
 	ib_destroy_qp ( ibdev, ipoib->qp );
@@ -642,20 +707,19 @@ void ipoib_link_state_changed ( struct ib_device *ibdev ) {
 		 sizeof ( mac->gid.u.half[0] ) );
 
 	/* Update broadcast GID based on potentially-new partition key */
-	ipoib->broadcast.gid.u.words[2] = htons ( ibdev->pkey );
+	ipoib->broadcast.gid.u.words[2] =
+		htons ( ibdev->pkey | IB_PKEY_FULL );
 
 	/* Set net device link state to reflect Infiniband link state */
-	if ( ib_link_ok ( ibdev ) ) {
-		netdev_link_up ( netdev );
-	} else {
-		netdev_link_down ( netdev );
-	}
+	rc = ib_link_rc ( ibdev );
+	netdev_link_err ( netdev, ( rc ? rc : -EINPROGRESS_JOINING ) );
 
 	/* Join new broadcast group */
 	if ( ib_link_ok ( ibdev ) &&
 	     ( ( rc = ipoib_join_broadcast_group ( ipoib ) ) != 0 ) ) {
 		DBGC ( ipoib, "IPoIB %p could not rejoin broadcast group: "
 		       "%s\n", ipoib, strerror ( rc ) );
+		netdev_link_err ( netdev, rc );
 		return;
 	}
 }

@@ -306,7 +306,8 @@ static int ath5k_probe(struct pci_device *pdev,
 		 * DMA to work so force a reasonable value here if it
 		 * comes up zero.
 		 */
-		pci_write_config_byte(pdev, PCI_CACHE_LINE_SIZE, 16);
+		csz = 16;
+		pci_write_config_byte(pdev, PCI_CACHE_LINE_SIZE, csz);
 	}
 	/*
 	 * The default setting of latency timer yields poor results,
@@ -1195,11 +1196,12 @@ ath5k_handle_rx(struct ath5k_softc *sc)
 
 		if (rs.rs_status) {
 			if (rs.rs_status & AR5K_RXERR_PHY) {
-				DBG("ath5k: rx PHY error\n");
+				/* These are uncommon, and may indicate a real problem. */
+				net80211_rx_err(sc->dev, NULL, EIO);
 				goto next;
 			}
 			if (rs.rs_status & AR5K_RXERR_CRC) {
-				net80211_rx_err(sc->dev, NULL, EIO);
+				/* These occur *all the time*. */
 				goto next;
 			}
 			if (rs.rs_status & AR5K_RXERR_DECRYPT) {
@@ -1358,6 +1360,8 @@ ath5k_init(struct ath5k_softc *sc)
 	if (ret)
 		goto done;
 
+	ath5k_rfkill_hw_start(ah);
+
 	/*
 	 * Reset the key cache since some parts do not reset the
 	 * contents on initial power up or resume from suspend.
@@ -1404,6 +1408,8 @@ ath5k_stop_hw(struct ath5k_softc *sc)
 		ath5k_hw_phy_disable(ah);
 	} else
 		sc->rxlink = NULL;
+
+	ath5k_rfkill_hw_stop(sc->ah);
 
 	return 0;
 }

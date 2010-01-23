@@ -73,6 +73,7 @@ e1000_get_hw_control ( struct e1000_adapter *adapter )
 		break;
 	case e1000_82571:
 	case e1000_82572:
+	case e1000_82576:
 	case e1000_80003es2lan:
 	case e1000_ich8lan:
 		ctrl_ext = E1000_READ_REG(&adapter->hw, CTRL_EXT);
@@ -92,8 +93,7 @@ e1000_get_hw_control ( struct e1000_adapter *adapter )
 static void
 e1000_irq_enable ( struct e1000_adapter *adapter )
 {
-	E1000_WRITE_REG ( &adapter->hw, IMS, E1000_IMS_RXDMT0 |
-			                     E1000_IMS_RXSEQ );
+	E1000_WRITE_REG ( &adapter->hw, IMS, IMS_ENABLE_MASK );
 	E1000_WRITE_FLUSH ( &adapter->hw );
 }
 
@@ -106,18 +106,6 @@ static void
 e1000_irq_disable ( struct e1000_adapter *adapter )
 {
 	E1000_WRITE_REG ( &adapter->hw, IMC, ~0 );
-	E1000_WRITE_FLUSH ( &adapter->hw );
-}
-
-/**
- * e1000_irq_force - trigger interrupt
- *
- * @v adapter	e1000 private structure
- **/
-static void
-e1000_irq_force ( struct e1000_adapter *adapter )
-{
-	E1000_WRITE_REG ( &adapter->hw, ICS, E1000_ICS_RXDMT0 );
 	E1000_WRITE_FLUSH ( &adapter->hw );
 }
 
@@ -253,6 +241,7 @@ e1000_configure_tx ( struct e1000_adapter *adapter )
 {
 	struct e1000_hw *hw = &adapter->hw;
 	uint32_t tctl;
+	uint32_t txdctl;
 
 	DBG ( "e1000_configure_tx\n" );
 
@@ -271,6 +260,12 @@ e1000_configure_tx ( struct e1000_adapter *adapter )
 	adapter->tx_tail = 0;
 	adapter->tx_fill_ctr = 0;
 
+	if (hw->mac_type == e1000_82576) {
+		txdctl = E1000_READ_REG ( hw, TXDCTL );
+		txdctl |= E1000_TXDCTL_QUEUE_ENABLE;
+		E1000_WRITE_REG ( hw, TXDCTL, txdctl );
+	}
+
 	/* Setup Transmit Descriptor Settings for eop descriptor */
 	tctl = E1000_TCTL_PSP | E1000_TCTL_EN |
 		(E1000_COLLISION_THRESHOLD << E1000_CT_SHIFT) | 
@@ -280,6 +275,65 @@ e1000_configure_tx ( struct e1000_adapter *adapter )
 
 	E1000_WRITE_REG ( hw, TCTL, tctl );
         E1000_WRITE_FLUSH ( hw );
+}
+
+static void
+e1000_free_rx_resources ( struct e1000_adapter *adapter )
+{
+	int i;
+
+	DBG ( "e1000_free_rx_resources\n" );
+
+	free_dma ( adapter->rx_base, adapter->rx_ring_size );
+
+	for ( i = 0; i < NUM_RX_DESC; i++ ) {
+		free_iob ( adapter->rx_iobuf[i] );
+	}
+}
+
+/**
+ * e1000_refill_rx_ring - allocate Rx io_buffers
+ *
+ * @v adapter	e1000 private structure
+ *
+ * @ret rc       Returns 0 on success, negative on failure
+ **/
+int e1000_refill_rx_ring ( struct e1000_adapter *adapter )
+{
+	int i, rx_curr;
+	int rc = 0;
+	struct e1000_rx_desc *rx_curr_desc;
+	struct e1000_hw *hw = &adapter->hw;
+	struct io_buffer *iob;
+
+	DBG ("e1000_refill_rx_ring\n");
+
+	for ( i = 0; i < NUM_RX_DESC; i++ ) {
+		rx_curr = ( ( adapter->rx_curr + i ) % NUM_RX_DESC );
+		rx_curr_desc = adapter->rx_base + rx_curr;
+
+		if ( rx_curr_desc->status & E1000_RXD_STAT_DD )
+			continue;
+
+		if ( adapter->rx_iobuf[rx_curr] != NULL )
+			continue;
+
+		DBG2 ( "Refilling rx desc %d\n", rx_curr );
+
+		iob = alloc_iob ( MAXIMUM_ETHERNET_VLAN_SIZE );
+		adapter->rx_iobuf[rx_curr] = iob;
+
+		if ( ! iob ) {
+			DBG ( "alloc_iob failed\n" );
+			rc = -ENOMEM;
+			break;
+		} else {
+			rx_curr_desc->buffer_addr = virt_to_bus ( iob->data );
+
+			E1000_WRITE_REG ( hw, RDT, rx_curr );
+		}
+	}
+	return rc;
 }
 
 /**
@@ -292,8 +346,7 @@ e1000_configure_tx ( struct e1000_adapter *adapter )
 static int
 e1000_setup_rx_resources ( struct e1000_adapter *adapter )
 {
-	int i, j;
-	struct e1000_rx_desc *rx_curr_desc;
+	int i, rc = 0;
 	
 	DBG ( "e1000_setup_rx_resources\n" );
 	
@@ -303,50 +356,23 @@ e1000_setup_rx_resources ( struct e1000_adapter *adapter )
 
         adapter->rx_base = 
         	malloc_dma ( adapter->rx_ring_size, adapter->rx_ring_size );
-        		     
+
        	if ( ! adapter->rx_base ) {
        		return -ENOMEM;
 	}
 	memset ( adapter->rx_base, 0, adapter->rx_ring_size );
 
 	for ( i = 0; i < NUM_RX_DESC; i++ ) {
-	
-		adapter->rx_iobuf[i] = alloc_iob ( MAXIMUM_ETHERNET_VLAN_SIZE );
-		
-		/* If unable to allocate all iobufs, free any that
-		 * were successfully allocated, and return an error 
-		 */
-		if ( ! adapter->rx_iobuf[i] ) {
-			for ( j = 0; j < i; j++ ) {
-				free_iob ( adapter->rx_iobuf[j] );
-			}
-			return -ENOMEM;
-		}
-
-		rx_curr_desc = ( void * ) ( adapter->rx_base ) + 
-					  ( i * sizeof ( *adapter->rx_base ) ); 
-			
-		rx_curr_desc->buffer_addr = virt_to_bus ( adapter->rx_iobuf[i]->data );	
-
-		DBG ( "i = %d  rx_curr_desc->buffer_addr = %#16llx\n", 
-		      i, rx_curr_desc->buffer_addr );
-		
-	}	
-	return 0;
-}
-
-static void
-e1000_free_rx_resources ( struct e1000_adapter *adapter )
-{
-	int i;
-	
-	DBG ( "e1000_free_rx_resources\n" );
-
-        free_dma ( adapter->rx_base, adapter->rx_ring_size );
-
-	for ( i = 0; i < NUM_RX_DESC; i++ ) {
-		free_iob ( adapter->rx_iobuf[i] );
+		/* let e1000_refill_rx_ring() io_buffer allocations */
+		adapter->rx_iobuf[i] = NULL;
 	}
+
+	/* allocate io_buffers */
+	rc = e1000_refill_rx_ring ( adapter );
+	if ( rc < 0 )
+		e1000_free_rx_resources ( adapter );
+
+	return rc;
 }
 
 /**
@@ -359,13 +385,15 @@ static void
 e1000_configure_rx ( struct e1000_adapter *adapter )
 {
 	struct e1000_hw *hw = &adapter->hw;
-	uint32_t rctl;
+	uint32_t rctl, rxdctl, mrqc, rxcsum;
 
 	DBG ( "e1000_configure_rx\n" );
 
 	/* disable receives while setting up the descriptors */
 	rctl = E1000_READ_REG ( hw, RCTL );
 	E1000_WRITE_REG ( hw, RCTL, rctl & ~E1000_RCTL_EN );
+	E1000_WRITE_FLUSH ( hw );
+	mdelay(10);
 
 	adapter->rx_curr = 0;
 
@@ -377,15 +405,56 @@ e1000_configure_rx ( struct e1000_adapter *adapter )
 	E1000_WRITE_REG ( hw, RDLEN, adapter->rx_ring_size );
 
 	E1000_WRITE_REG ( hw, RDH, 0 );
-	E1000_WRITE_REG ( hw, RDT, NUM_RX_DESC - 1 );
-	
-	/* Enable Receives */
-	rctl = ( E1000_RCTL_EN | E1000_RCTL_BAM | E1000_RCTL_SZ_2048 |
-		 E1000_RCTL_MPE 
-		);
+	if (hw->mac_type == e1000_82576)
+		E1000_WRITE_REG ( hw, RDT, 0 );
+	else
+		E1000_WRITE_REG ( hw, RDT, NUM_RX_DESC - 1 );
 
+	/* This doesn't seem to  be necessary for correct operation,
+	 * but it seems as well to be implicit
+	 */
+	if (hw->mac_type == e1000_82576) {
+		rxdctl = E1000_READ_REG ( hw, RXDCTL );
+		rxdctl |= E1000_RXDCTL_QUEUE_ENABLE;
+		rxdctl &= 0xFFF00000;
+		rxdctl |= IGB_RX_PTHRESH;
+		rxdctl |= IGB_RX_HTHRESH << 8;
+		rxdctl |= IGB_RX_WTHRESH << 16;
+		E1000_WRITE_REG ( hw, RXDCTL, rxdctl );
+		E1000_WRITE_FLUSH ( hw );
+
+		rxcsum = E1000_READ_REG(hw, RXCSUM);
+		rxcsum &= ~( E1000_RXCSUM_TUOFL | E1000_RXCSUM_IPPCSE );
+		E1000_WRITE_REG ( hw, RXCSUM, 0 );
+
+		/* The initial value for MRQC disables multiple receive
+		 * queues, however this setting is not recommended.
+		 * - Intel® 82576 Gigabit Ethernet Controller Datasheet r2.41
+	         *   Section 8.10.9 Multiple Queues Command Register - MRQC
+		 */
+		mrqc = E1000_MRQC_ENABLE_VMDQ;
+		E1000_WRITE_REG ( hw, MRQC, mrqc );
+	}
+
+	/* Enable Receives */
+	rctl |=  E1000_RCTL_EN | E1000_RCTL_BAM | E1000_RCTL_SZ_2048 |
+		 E1000_RCTL_MPE;
 	E1000_WRITE_REG ( hw, RCTL, rctl );
 	E1000_WRITE_FLUSH ( hw );
+
+	/* On the 82576, RDT([0]) must not be "bumped" before
+	 * the enable bit of RXDCTL([0]) is set.
+	 * - Intel® 82576 Gigabit Ethernet Controller Datasheet r2.41
+	 *   Section 4.5.9 receive Initialization
+	 *
+	 * By observation I have found to occur when the enable bit of
+	 * RCTL is set. The datasheet recommends polling for this bit,
+	 * however as I see no evidence of this in the Linux igb driver
+	 * I have omitted that step.
+	 * - Simon Horman, May 2009
+	 */
+	if (hw->mac_type == e1000_82576)
+		E1000_WRITE_REG ( hw, RDT, NUM_RX_DESC - 1 );
 
         DBG ( "RDBAL: %#08x\n",  E1000_READ_REG ( hw, RDBAL ) );
         DBG ( "RDLEN: %d\n",     E1000_READ_REG ( hw, RDLEN ) );
@@ -433,6 +502,9 @@ e1000_reset ( struct e1000_adapter *adapter )
 	case e1000_82573:
 		pba = E1000_PBA_20K;
 		break;
+	case e1000_82576:
+		pba = E1000_PBA_64K;
+		break;
 	case e1000_ich8lan:
 		pba = E1000_PBA_8K;
 	case e1000_undefined:
@@ -446,6 +518,7 @@ e1000_reset ( struct e1000_adapter *adapter )
 	/* Set the FC high water mark to 90% of the FIFO size.
 	 * Required to clear last 3 LSB */
 	fc_high_water_mark = ((pba * 9216)/10) & 0xFFF8;
+
 	/* We can't use 90% on small FIFOs because the remainder
 	 * would be less than 1 full frame.  In this case, we size
 	 * it to allow at least a full frame above the high water
@@ -453,9 +526,20 @@ e1000_reset ( struct e1000_adapter *adapter )
 	if (pba < E1000_PBA_16K)
 		fc_high_water_mark = (pba * 1024) - 1600;
 
-	adapter->hw.fc_high_water = fc_high_water_mark;
-	adapter->hw.fc_low_water = fc_high_water_mark - 8;
-	if (adapter->hw.mac_type == e1000_80003es2lan)
+	/* This actually applies to < e1000_82575, one revision less than
+	 * e1000_82576, but e1000_82575 isn't currently defined in the code */
+	if (adapter->hw.mac_type < e1000_82576) {
+		/* 8-byte granularity */
+		adapter->hw.fc_high_water = fc_high_water_mark & 0xFFF8;
+		adapter->hw.fc_low_water = adapter->hw.fc_high_water - 8;
+	} else {
+		/* 16-byte granularity */
+		adapter->hw.fc_high_water = fc_high_water_mark & 0xFFF0;
+		adapter->hw.fc_low_water = adapter->hw.fc_high_water - 16;
+	}
+
+	if (adapter->hw.mac_type == e1000_80003es2lan ||
+	    adapter->hw.mac_type == e1000_82576)
 		adapter->hw.fc_pause_time = 0xFFFF;
 	else
 		adapter->hw.fc_pause_time = E1000_FC_PAUSE_TIME;
@@ -610,12 +694,10 @@ e1000_poll ( struct net_device *netdev )
 	uint32_t rx_status;
 	uint32_t rx_len;
 	uint32_t rx_err;
-	struct io_buffer *rx_iob;
 	struct e1000_tx_desc *tx_curr_desc;
 	struct e1000_rx_desc *rx_curr_desc;
 	uint32_t i;
-	uint64_t tmp_buffer_addr;
-	
+
 	DBGP ( "e1000_poll\n" );
 
 	/* Acknowledge interrupts */
@@ -675,46 +757,37 @@ e1000_poll ( struct net_device *netdev )
 		if ( ! ( rx_status & E1000_RXD_STAT_DD ) )
 			break;
 
+		if ( adapter->rx_iobuf[i] == NULL )
+			break;
+
 		DBG ( "RCTL = %#08x\n", E1000_READ_REG ( &adapter->hw, RCTL ) );
 	
 		rx_len = rx_curr_desc->length;
 
                 DBG ( "Received packet, rx_curr: %d  rx_status: %#08x  rx_len: %d\n",
                       i, rx_status, rx_len );
-                
+
                 rx_err = rx_curr_desc->errors;
-                
+
+		iob_put ( adapter->rx_iobuf[i], rx_len );
+
 		if ( rx_err & E1000_RXD_ERR_FRAME_ERR_MASK ) {
 		
-			netdev_rx_err ( netdev, NULL, -EINVAL );
+			netdev_rx_err ( netdev, adapter->rx_iobuf[i], -EINVAL );
 			DBG ( "e1000_poll: Corrupted packet received!"
 			      " rx_err: %#08x\n", rx_err );
 		} else 	{
-		
-			/* If unable allocate space for this packet,
-			 *  try again next poll
-			 */
-			rx_iob = alloc_iob ( rx_len );
-			if ( ! rx_iob ) 
-				break;
-				
-			memcpy ( iob_put ( rx_iob, rx_len ), 
-				adapter->rx_iobuf[i]->data, rx_len );
-				
-			/* Add this packet to the receive queue. 
-			 */
-			netdev_rx ( netdev, rx_iob );
+			/* Add this packet to the receive queue. */
+			netdev_rx ( netdev, adapter->rx_iobuf[i] );
 		}
+		adapter->rx_iobuf[i] = NULL;
 
-		tmp_buffer_addr = rx_curr_desc->buffer_addr;
 		memset ( rx_curr_desc, 0, sizeof ( *rx_curr_desc ) );
-		rx_curr_desc->buffer_addr = tmp_buffer_addr;
-
-		E1000_WRITE_REG ( hw, RDT, adapter->rx_curr );
 
 		adapter->rx_curr = ( adapter->rx_curr + 1 ) % NUM_RX_DESC;
 	}
-}				
+	e1000_refill_rx_ring(adapter);
+}
 
 /**
  * e1000_irq - enable or Disable interrupts
@@ -728,18 +801,11 @@ e1000_irq ( struct net_device *netdev, int enable )
 	struct e1000_adapter *adapter = netdev_priv(netdev);
 
 	DBG ( "e1000_irq\n" );
-	
-	switch ( enable ) {
-	case 0 :
-		e1000_irq_disable ( adapter );
-		break;
-	case 1 :
+
+	if ( enable )
 		e1000_irq_enable ( adapter );
-		break;
-	case 2 :
-		e1000_irq_force ( adapter );
-		break;
-	}
+	else
+		e1000_irq_disable ( adapter );
 }
 
 static struct net_device_operations e1000_operations;
@@ -1102,6 +1168,7 @@ static struct pci_device_id e1000_nics[] = {
 	PCI_ROM(0x8086, 0x10bc, "e1000-0x10bc", "e1000-0x10bc", 0),
 	PCI_ROM(0x8086, 0x10c4, "e1000-0x10c4", "e1000-0x10c4", 0),
 	PCI_ROM(0x8086, 0x10c5, "e1000-0x10c5", "e1000-0x10c5", 0),
+	PCI_ROM(0x8086, 0x10c9, "e1000-0x10c9", "e1000-0x10c9", 0),
 	PCI_ROM(0x8086, 0x10d9, "e1000-0x10d9", "e1000-0x10d9", 0),
 	PCI_ROM(0x8086, 0x10da, "e1000-0x10da", "e1000-0x10da", 0),
 };
